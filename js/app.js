@@ -36,7 +36,13 @@ const b64d = s => decodeURIComponent(escape(atob(s.replace(/\s/g, ''))));
 const draft = lsGet('mms-draft', null);
 let S = draft?.S || { inv: [], jobs: [] };
 let dirty = draft?.dirty || { inv: false, jobs: false };
-let cfg = lsGet('mms-cfg', { repo: '', branch: 'main', token: '' });
+/* Repo and branch are built in. The token is entered once in Settings and saved in this browser only. */
+const cfg = {
+  repo: 'montymorris/montymorrisproductions-inventory',
+  branch: 'main',
+  token: lsGet('mms-token', '')
+};
+let freeScan = lsGet('mms-free', true);
 const shas = {}; let timer = null, syncMsg = '', syncBad = false;
 const connected = () => !!(cfg.token && cfg.repo);
 const H = () => ({ Authorization: 'Bearer ' + cfg.token, Accept: 'application/vnd.github+json' });
@@ -164,13 +170,14 @@ function jobPage(id, tab) {
   const n = (s) => items.filter(a => a.status === s).length;
   const head = `<p class="sub"><a href="#/jobs">Opportunities</a> / ${esc(j.id)}</p><div class="row" style="margin-top:0"><h1>${esc(j.name)}</h1><span class="sp"></span><button class="b2" data-act="sheet" data-id="${id}">Kit list</button><button class="b2" data-act="label" data-id="${id}">Job label</button><button class="b2" data-act="editjob" data-id="${id}">Edit</button></div>
   <div class="grey"><b>${esc(j.client || 'No client')}</b>, ${esc(j.venue || 'no venue')}<br>In use ${when(j.start, j.start_time)} &nbsp; Return by ${when(j.end, j.end_time)}</div>
-  <div class="tabs"><a class="${tab !== 'prepare' ? 'on' : ''}" href="#/jobs/${esc(id)}">Items (${items.length})</a><a class="${tab === 'prepare' ? 'on' : ''}" href="#/jobs/${esc(id)}/prepare">Prepare</a></div>`;
+  <div class="tabs"><a class="${!tab ? 'on' : ''}" href="#/jobs/${esc(id)}">Items (${items.length})</a><a class="${tab === 'prepare' ? 'on' : ''}" href="#/jobs/${esc(id)}/prepare">Prepare</a><a class="${tab === 'checkin' ? 'on' : ''}" href="#/jobs/${esc(id)}/checkin">Check in</a></div>`;
   const msgs = log.map(m => `<div class="msg ${m.bad ? 'bad' : ''}">${esc(m.t)}</div>`).join('');
   if (tab === 'prepare') {
     const todo = items.filter(a => a.status === 'allocated');
     view(head + `<div class="row"><h2 style="margin:0">Prepared ${n('prepared') + n('out')} of ${items.length}</h2></div><input class="scan" id="sc" placeholder="Scan an asset number, then press Enter" aria-label="Asset number" autocomplete="off">
-    <p class="note">Free scan: any available asset you scan is added to this opportunity and marked prepared.</p><div aria-live="polite">${msgs}</div>
+    <div class="row" style="margin:8px 0"><label style="display:flex;gap:8px;align-items:center;grid-auto-flow:column"><input type="checkbox" id="fs"${freeScan ? ' checked' : ''}> Free scan ${freeScan ? 'on' : 'off'}</label></div><p class="note">${freeScan ? 'Any available asset you scan is added to this opportunity and marked prepared.' : 'Only assets already allocated to this opportunity can be prepared. Anything else is refused.'}</p><div aria-live="polite">${msgs}</div>
     ${todo.length ? `<div class="bar">Still to prepare</div><div class="tw"><table>${todo.map(a => `<tr><td>${esc(a.asset_no)}</td><td>${esc(a.product)}</td></tr>`).join('')}</table></div>` : ''}`);
+    $('#fs').onchange = e => { freeScan = e.target.checked; lsSet('mms-free', freeScan); jobPage(id, 'prepare'); };
     const sc = $('#sc'); sc.focus();
     sc.onkeydown = e => {
       if (e.key !== 'Enter') return; const v = sc.value.trim(); if (!v) return;
@@ -179,8 +186,27 @@ function jobPage(id, tab) {
       if (a.job_id && a.job_id !== id) return say(a.asset_no + ' is on ' + (jobOf(a.job_id)?.name || a.job_id), 1);
       if (a.status === 'prepared') return say(a.asset_no + ' is already prepared', 1);
       if (a.status === 'out') return say(a.asset_no + ' is already booked out', 1);
+      if (a.status === 'available' && !freeScan) return say(a.asset_no + ' is not allocated to this opportunity. Turn on free scan to add it.', 1);
       const was = a.status; a.job_id = id; a.status = 'prepared'; touch('inv');
       say((was === 'available' ? 'Allocated and prepared ' : 'Prepared ') + a.asset_no + ' (' + a.product + ')');
+    };
+    return;
+  }
+  if (tab === 'checkin') {
+    const outs = items.filter(a => a.status === 'out');
+    view(head + `<div class="row"><h2 style="margin:0">Still out ${outs.length} of ${items.length}</h2></div><input class="scan" id="sc" placeholder="Scan an asset number to check in, then press Enter" aria-label="Asset number" autocomplete="off">
+    <p class="note">Scanned assets that are booked out on this opportunity are checked in and returned to inventory.</p><div aria-live="polite">${msgs}</div>
+    ${outs.length ? `<div class="bar">Still to check in</div><div class="tw"><table>${outs.map(a => `<tr><td>${esc(a.asset_no)}</td><td>${esc(a.product)}</td></tr>`).join('')}</table></div>` : items.length ? '<p class="empty">Everything has been checked in.</p>' : ''}`);
+    const sc = $('#sc'); sc.focus();
+    sc.onkeydown = e => {
+      if (e.key !== 'Enter') return; const v = sc.value.trim(); if (!v) return;
+      const a = S.inv.find(x => x.asset_no.toLowerCase() === v.toLowerCase()), say = (t, bad) => { log.unshift({ t, bad }); log = log.slice(0, 4); jobPage(id, 'checkin'); };
+      if (!a) return say('No asset with number ' + v, 1);
+      if (a.job_id && a.job_id !== id) return say(a.asset_no + ' is on ' + (jobOf(a.job_id)?.name || a.job_id), 1);
+      if (!a.job_id) return say(a.asset_no + ' is already checked in', 1);
+      if (a.status !== 'out') return say(a.asset_no + ' has not been booked out', 1);
+      a.status = 'available'; a.job_id = ''; touch('inv');
+      say('Checked in ' + a.asset_no + ' (' + a.product + ')');
     };
     return;
   }
@@ -225,12 +251,13 @@ function sheet(j) {
 
 /* ---------- settings ---------- */
 function settings() {
-  view(`<h1>Settings</h1><p class="sub">Connect this page to your GitHub repo so every change updates the spreadsheets in <code>data/</code>.</p>
-  <div class="bar">GitHub</div><div class="grey" style="display:grid;gap:12px;max-width:520px">${fld('Repository (owner/name)', 'repo', cfg.repo, 'id="c_repo" placeholder="montymorris/inventory"')}${fld('Branch', 'branch', cfg.branch, 'id="c_br"')}<label>Access token<input id="c_tok" type="password" value="${esc(cfg.token)}" autocomplete="off"></label>
-  <p class="note" style="margin:0">Use a fine-grained token limited to this one repo with Contents set to read and write. It is stored in this browser only.</p><div class="row" style="margin:0"><button class="b1" id="cs">Save and load from GitHub</button><button class="b2" id="cd">Disconnect</button></div><div id="cm"></div></div>
+  view(`<h1>Settings</h1><p class="sub">Connected to <code>${esc(cfg.repo)}</code> on branch <code>${esc(cfg.branch)}</code>. Once a token is saved, every change updates the spreadsheets in <code>data/</code> automatically.</p>
+  <div class="bar">GitHub access token</div><div class="grey" style="display:grid;gap:12px;max-width:520px"><label>Access token<input id="c_tok" type="password" value="${esc(cfg.token)}" autocomplete="off" placeholder="Paste token"></label>
+  <p class="note" style="margin:0">Paste it once. It stays saved in this browser only and is never written to the repo. Use a fine-grained token limited to this repo with Contents set to read and write.</p>
+  <div class="row" style="margin:0"><button class="b1" id="cs">Save and load from GitHub</button><button class="b2" id="cd">Remove token</button></div><div id="cm"></div></div>
   <div class="row"><h2 style="margin:0">Spreadsheets</h2></div><div class="row" style="margin-top:0"><button class="b2" data-act="dl" data-k="inv">Download inventory.csv</button><button class="b2" data-act="dl" data-k="jobs">Download jobs.csv</button></div>`);
-  $('#cs').onclick = async () => { cfg = { repo: $('#c_repo').value.trim(), branch: $('#c_br').value.trim() || 'main', token: $('#c_tok').value.trim() }; lsSet('mms-cfg', cfg); $('#cm').innerHTML = '<div class="msg">Loading…</div>'; await pull(); $('#cm').innerHTML = `<div class="msg ${syncBad ? 'bad' : ''}">${esc(syncMsg || 'Connected. The spreadsheets are loaded.')}</div>`; };
-  $('#cd').onclick = () => { cfg = { repo: '', branch: 'main', token: '' }; lsSet('mms-cfg', cfg); settings(); showSync(); };
+  $('#cs').onclick = async () => { cfg.token = $('#c_tok').value.trim(); lsSet('mms-token', cfg.token); $('#cm').innerHTML = '<div class="msg">Loading…</div>'; await pull(); $('#cm').innerHTML = `<div class="msg ${syncBad ? 'bad' : ''}">${esc(syncMsg || (connected() ? 'Token saved. The spreadsheets are loaded.' : 'Enter a token first.'))}</div>`; };
+  $('#cd').onclick = () => { cfg.token = ''; lsSet('mms-token', ''); settings(); showSync(); };
 }
 
 /* ---------- events and routing ---------- */
