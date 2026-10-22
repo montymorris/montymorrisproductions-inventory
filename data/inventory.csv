@@ -1,0 +1,9 @@
+asset_no,product,hire_price,replacement_cost,status,job_id
+MIC-001,Microphone,5,90,prepared,J0001
+MIC-002,Microphone,5,90,available,
+XLR-001,XLR cable 10m,1.5,12,allocated,J0001
+XLR-002,XLR cable 10m,1.5,12,available,
+XLR-003,XLR cable 10m,1.5,12,available,
+PAR-001,LED par,12,180,available,
+PAR-002,LED par,12,180,available,
+DESK-001,Mixing desk 16 ch,120,1800,available,
